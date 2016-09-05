@@ -1,0 +1,140 @@
+********************* ABOUT NEMU **********************
+https://github.com/nju-ics/ics2015
+
+
+********************* FILE VERSIONS *******************
+gcc-6.1.0.tar.bz2
+musl-1.1.14.tar.gz
+binutils-2.26.tar.gz
+newlib-2.4.0.tar.gz  (NEMU only)
+
+
+
+************************ PATCH ************************
+
+
+
+==========PATCH GCC:   SOFT FLOAT========
+// use t-softfp-sfdf like rtems
+change libgcc/config.host:1372
+	tmake_file="${tmake_file} t-softfp-tf"
+to
+	tmake_file="${tmake_file} t-softfp-sfdf"
+
+// make -msoft-float default for i386
+change gcc/config/i386/i386.c:4387
+     {"i386", PROCESSOR_I386, CPU_NONE, 0},
+to
+     {"i386", PROCESSOR_I386, CPU_NONE, PTA_NO_80387},
+
+// make -mlong-double-64 default
+change gcc/config/i386/i386.c:5547
+  /* Default long double to 64-bit for 32-bit Bionic and to __float128
+     for 64-bit Bionic.  Also default long double to 64-bit for Intel
+     MCU psABI.  */
+  if ((TARGET_HAS_BIONIC || TARGET_IAMCU)
+      && !(opts_set->x_target_flags
+       & (MASK_LONG_DOUBLE_64 | MASK_LONG_DOUBLE_128)))
+    opts->x_target_flags |= (TARGET_64BIT
+                 ? MASK_LONG_DOUBLE_128
+                 : MASK_LONG_DOUBLE_64);
+
+to
+    opts->x_target_flags |= (TARGET_64BIT
+                 ? MASK_LONG_DOUBLE_128
+                 : MASK_LONG_DOUBLE_64);
+// this is a dirty hack
+
+
+
+
+======== PATCH: MUSL ========
+
+// PATCH long-double
+copy
+musl-1.1.14/arch/arm/bits/float.h
+to
+musl-1.1.14/arch/i386/bits/float.h
+i.e.
+cp musl-1.1.14/arch/arm/bits/float.h musl-1.1.14/arch/i386/bits/float.h
+
+// PATCH .s math functions
+remove whole directory at 'musl/src/math/i386' i.e.
+rm -r musl-1.1.14/src/math/i386
+
+
+// PATCH musl headers for newlib  (NEMU only)
+add following lines to /include/stddef.h after the #define __NEED_????????
+#define __NEED_wint_t
+
+add following lines to musl-1.1.14/arch/i386/bits/alltypes.h.in (or after install, bits/alltypes.h) after the typedef __builtin_va_list va_list; // line 7
+typedef __builtin_va_list __gnuc_va_list;
+// do NOT use TYPEDEF instead of typedef
+
+
+add following lines to /include/limits.h after the defined LLONG_MIN, LLONG_MAX ... // line 35
+#define LONG_LONG_MAX LLONG_MAX
+#define LONG_LONG_MIN LLONG_MIN
+#define ULONG_LONG_MAX ULLONG_MAX
+
+
+
+
+
+
+
+************************ BUILD ************************
+
+
+
+
+
+====== BINUTILS ======
+../binutils-2.26/configure --prefix=/home/zby/src/toolchains/gcc6.1-i386-nemu-linux-musl/opt --target=i386-nemu-linux-musl --disable-werror 
+
+
+====== GCC PASS 1 ======
+DONT FORGET TO PATCH SOFT_FLOAT
+
+export PATH=/home/zby/src/toolchains/gcc6.1-i386-nemu-linux-musl/opt/bin:$PATH
+
+../gcc-6.1.0/configure --prefix=/home/zby/src/toolchains/gcc6.1-i386-nemu-linux-musl/opt --target=i386-nemu-linux-musl --with-arch=i386 --with-tune=i386 --enable-languages=c --with-newlib --disable-threads --disable-shared --without-headers 
+  
+make all-gcc all-target-libgcc -j8
+make install-gcc install-target-libgcc
+
+
+
+====== MUSL ======
+DONT FORGET TO PATCH SOFT_FLOAT
+
+CROSS_COMPILE="i386-nemu-linux-musl-" CFLAGS="-fno-stack-protector -fno-omit-frame-pointer -march=i386 -mtune=i386" ../musl-1.1.14/configure --prefix=/home/zby/src/toolchains/gcc6.1-i386-nemu-linux-musl/opt/i386-nemu-linux-musl --target=i386-nemu-linux-musl --disable-shared
+make -j8
+make install
+
+/////  NOTE: no need to add -mlong-double-64 -msoft-float  SINCE WE PATCHED GCC
+/////  NOTE: if you need stack backtrace, you should add '-fno-omit-frame-pointer' to CFLAGS
+/////  NOTE: musl use -march=i486 for default, so we must use -march=i386 -mtune=i386
+/////  NOTE:    there is a instruction called CMPXCHG, only in i486 and later
+/////  NOTE: run "make install" twice will cause error! ====
+
+
+
+
+======= GCC PASS 2 =======
+DONT FORGET TO PATCH SOFT_FLOAT
+
+../gcc-6.1.0/configure --prefix=/home/zby/src/toolchains/gcc6.1-i386-nemu-linux-musl/opt --target=i386-nemu-linux-musl --with-arch=i386 --enable-languages=c,c++ --disable-libmudflap --disable-libsanitizer --disable-libmpx --disable-shared --disable-decimal-float --disable-libatomic
+
+
+
+====== NEWLIB FOR NEMU   (NEMU only) ======
+
+go to ./opt/bin/ and run
+    for i in `ls`; do      ln -s $i i386-linux-elf-`echo $i | sed 's/.*musl-//g'`; done
+                      echo    // you need this if you want to dry-run
+
+DON'T FORGET TO PATCH MUSL HEADERS
+
+../newlib-2.4.0/configure --prefix=/home/zby/src/toolchains/gcc6.1-i386-nemu-linux-musl/newlib --target=i386-linux-elf
+
